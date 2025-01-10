@@ -3,16 +3,12 @@
 #include <stdatomic.h>
 #include <threads.h>
 
-// Remove later
-#include <stdio.h>
-
 // ===========================================================
 
 typedef struct _node {
     struct _node *next;
     void *content;
 } Node;
-
 
 typedef struct _queue {
     Node *first;
@@ -38,7 +34,53 @@ void empty_queue() {
 
 // ===========================================================
 
-mtx_t mutex;
+typedef struct _waitnode {
+    struct _waitnode *next;
+    cnd_t *cv;
+} WaitNode;
+
+typedef struct _waitqueue {
+    WaitNode *first;
+    WaitNode *last;
+} WaitQueue;
+
+WaitQueue *wqueue;
+mtx_t thread_mtx;
+
+void wenqueue(cnd_t cv) {
+    // Sets up a CV for this thread to sleep on
+    cnd_init(&cv);
+    WaitNode *wnode = malloc(sizeof(WaitNode));
+    *wnode = (WaitNode){NULL, &cv};
+    if (wqueue->first) {
+	wqueue->last->next = wnode;
+    }
+    else {
+	wqueue->first = wnode;
+	wqueue->last = wnode;
+    }
+    cnd_wait(&cv, &thread_mtx);
+}
+
+void wdequeue() {
+    // Dequeues the next thread to wake up
+    WaitNode *first_wnode;
+    cnd_t *cv;
+    if (wqueue->first) {
+	first_wnode = wqueue->first;
+	if (wqueue->first == wqueue->last) {
+	    wqueue->last = NULL;
+	}
+	wqueue->first = wqueue->first->next;
+	cv = first_wnode->cv;
+	free(first_wnode);
+	cnd_signal(cv);
+    }
+}
+
+// ===========================================================
+
+mtx_t queue_mtx;
 cnd_t nonEmpty;
 atomic_int count;
 
@@ -46,26 +88,34 @@ atomic_int count;
 
 void initQueue(void) {
     queue = malloc(sizeof(Queue));
-    // Assuming malloc(...) succeeded
     *queue = (Queue){NULL, NULL};
+    wqueue = malloc(sizeof(WaitQueue));
+    *wqueue = (WaitQueue){NULL, NULL};
     count = 0;
-    mtx_init(&mutex, mtx_plain);
+    mtx_init(&queue_mtx, mtx_plain);
+    mtx_init(&thread_mtx, mtx_plain);
     cnd_init(&nonEmpty);
 }
 
-
 void destroyQueue(void) {
-    mtx_destroy(&mutex);
+    mtx_destroy(&queue_mtx);
+    mtx_destroy(&thread_mtx);
     cnd_destroy(&nonEmpty);
-    printf("cond %d\n", queue->first == queue->last);
     empty_queue();
     free(queue);
+    free(wqueue);
 }
 
 // ===========================================================
 
 void enqueue(void *item) {
-    mtx_lock(&mutex);
+    mtx_lock(&thread_mtx);
+    cnd_t cv;
+    if (wqueue->first) {
+	wenqueue(cv);
+	cnd_destroy(&cv);
+    }
+    // mtx_lock(&queue_mtx);
     Node *node = malloc(sizeof(Node));
     *node = (Node){NULL, item};
     if (queue->first == NULL) {
@@ -76,19 +126,24 @@ void enqueue(void *item) {
 	queue->last->next = node;
 	queue->last = node;
     }
-    printf("eltesto\n");
-    printf("enqueued %d\n", *(int *)item);
     cnd_signal(&nonEmpty);
-    mtx_unlock(&mutex);
+    // mtx_unlock(&queue_mtx);
+    wdequeue();
+    mtx_unlock(&thread_mtx);
 }
 
-
 void *dequeue(void) {
+    mtx_lock(&thread_mtx);
     Node *first_node;
     void *item;
-    mtx_lock(&mutex);
+    cnd_t cv;
+    if (wqueue->first) {
+	wenqueue(cv);
+	cnd_destroy(&cv);
+    }
+    // mtx_lock(&queue_mtx);
     while (queue->first == NULL) {
-	cnd_wait(&nonEmpty, &mutex);
+	cnd_wait(&nonEmpty, &queue_mtx);
     } // Reachable after lock is reacquired
     first_node = queue->first;
     item = first_node->content;
@@ -97,31 +152,34 @@ void *dequeue(void) {
 	queue->last = NULL;
     }
     free(first_node);
-    printf("%d\n", *((int *)item));
     count++;
-    mtx_unlock(&mutex);
-
+    // mtx_unlock(&queue_mtx);
+    wdequeue();
+    mtx_unlock(&thread_mtx);
     return item;
 }
 
-
 bool tryDequeue(void **address) {
     Node *first_node;
-    int rv = mtx_trylock(&mutex);
+    int rv = mtx_trylock(&thread_mtx);
     if (rv != thrd_success) {
-	printf("Failed!\n");
 	return false;
     }
-    else { // Reachable after lock is reacquired
-	first_node = queue->first;
-	*address = first_node->content;
-	queue->first = queue->first->next;
-	free(first_node);
-	printf("%d\n", **((int **)address));
-	count++;
-	mtx_unlock(&mutex);
-	return true;
-    } 
+    else {
+	rv = mtx_trylock(&queue_mtx);
+	if (rv != thrd_success) {
+	    return false;
+	}	
+	else { // Reachable after lock is reacquired
+	    first_node = queue->first;
+	    *address = first_node->content;
+	    queue->first = queue->first->next;
+	    free(first_node);
+	    count++;
+	    mtx_unlock(&queue_mtx);
+	    return true;
+	} 
+    }
 }
 
 // ===========================================================

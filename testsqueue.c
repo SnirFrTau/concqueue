@@ -22,13 +22,28 @@ int entoqueue(void *numbers) {
 }
 
 
-int detoqueue() {
+int detoqueue(void *index) {
     printf("Need to complete %d\n", N / nthreads);
     void **out = malloc(sizeof(void *));
 
     for (int j = 0; j < N / nthreads; ) {
-	printf("i dequeue in attempt %d of %d\n", j+1, N / nthreads);
+	printf("i (%d) dequeue in attempt %d of %d\n", *((int *)index), j+1, N / nthreads);
 	dequeue();
+	j++;
+	// printf("%d\n", *out);
+    }
+    free(out);
+    return thrd_success;
+}
+
+
+int detryqueue(void *index) {
+    printf("Need to complete %d\n", N / nthreads);
+    void **out = malloc(sizeof(void *));
+
+    for (int j = 0; j < N / nthreads; ) {
+	printf("i (%d) dequeue in attempt %d of %d\n", *((int *)index), j+1, N / nthreads);
+	if (tryDequeue(out))
 	    j++;
 	// printf("%d\n", *out);
     }
@@ -40,8 +55,41 @@ int detoqueue() {
 int derogueue() {
     void *out;
     out = dequeue();
-    printf("HA I GOT YOU %d\n", *(int *)out);
+    printf("'Tis I, the rogue! And I captured %d!\n", *(int *)out);
     return thrd_success;
+}
+
+// ==================================================
+
+void enqueue_numbers(int **numbers) {
+    int i, status, rv;
+    thrd_t threads[nthreads];
+    thrd_t rogue;
+    
+    idx = 0;
+    
+    // Create rogue thread
+    //rv = thrd_create(&rogue, derogueue, NULL);
+
+    // Enqueue all numbers
+    for (i = 0; i < nthreads; i++) {
+      	rv = thrd_create(&threads[i], entoqueue, (void *)numbers);
+	if (rv != thrd_success) {
+	    fprintf(stderr, "Oopsie in thrd_create\n");
+	    exit(-1);
+	}
+    }
+    for (i = 0; i < nthreads; i++) {
+	rv = thrd_join(threads[i], &status);
+	if (rv != thrd_success) {
+	    fprintf(stderr, "Oopsie in thrd_join\n");
+	    exit(-1);
+	}
+    }
+    //enqueue(numbers[SIZE - 1]);
+    //thrd_join(rogue, &status);
+    
+    printf("Joined in the end of enqueuing.\n");
 }
 
 // ==================================================
@@ -49,10 +97,10 @@ int derogueue() {
 
 int main(void) {
     int **numbers;
+    int **out;
     int i, status, rv;
     // bool succ;
     thrd_t threads[nthreads];
-    thrd_t rogue;
 
     // ==============================================
     // Memory Allocation
@@ -61,41 +109,34 @@ int main(void) {
     numbers = malloc(SIZE * sizeof(int *));
     for (i = 0; i < SIZE; i++) {
 	numbers[i] = malloc(sizeof(int));
-	*(numbers[i]) = i;
+	*(numbers[i]) = i*2;
     }
+    out = malloc(sizeof(int *));
 
     // ==============================================
     // Test Zone
     // ==============================================
 
-    idx = 0;
     initQueue();
-
-    rv = thrd_create(&rogue, derogueue, NULL);
-    for (i = 0; i < nthreads; i++) {
-      	rv = thrd_create(&threads[i], entoqueue, (void *)numbers);
-	if (rv != thrd_success) {
-	    fprintf(stderr, "Oopsie in thrd_create\n");
-	    exit(-1);
-	}
+    enqueue_numbers(numbers);
+    /*
+    for (i = 0; i < SIZE; i++) {
+	printf("%ld\n", numbers[i]);
+	enqueue(numbers[i]);
     }
-
-    for (i = 0; i < nthreads; i++) {
-	rv = thrd_join(threads[i], &status);
-	if (rv != thrd_success) {
-	    fprintf(stderr, "Oopsie in thrd_join\n");
-	    exit(-1);
-	}
+    derogueue();
+    */
+    // Safe dequeuing
+    for (i = 0; i < SIZE - 1; i++) {
+	*out = dequeue();
+	printf("%d", **out == *(numbers[i]));
     }
-
-    thrd_join(rogue, &status);
-
-    printf("Finished joining!\n");
+    
 
     for (i = 0; i < nthreads; i++) {
-	sleep(10);
+        int indices[10] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
 	printf("creating %d\n", i);
-	rv = thrd_create(&threads[i], detoqueue, NULL);
+	rv = thrd_create(&threads[i], detryqueue, &(indices[i]));
 	if (rv != thrd_success) {
 	    fprintf(stderr, "Oopsie in thrd_create\n");
 	    exit(-1);
@@ -106,7 +147,6 @@ int main(void) {
 	printf("joining %d\n", i);
 	rv = thrd_join(threads[i], &status);
 	if (rv != thrd_success) {
-	    
 	    fprintf(stderr, "Oopsie in thrd_join\n");
 	    exit(-1);
 	}
