@@ -32,6 +32,10 @@ void empty_queue() {
     }
 }
 
+bool is_empty() {
+    return (queue->first == NULL);
+}
+
 // ===========================================================
 
 typedef struct _waitnode {
@@ -115,7 +119,7 @@ void enqueue(void *item) {
 	wenqueue(cv);
 	cnd_destroy(&cv);
     }
-    // mtx_lock(&queue_mtx);
+    mtx_lock(&queue_mtx);
     Node *node = malloc(sizeof(Node));
     *node = (Node){NULL, item};
     if (queue->first == NULL) {
@@ -127,7 +131,7 @@ void enqueue(void *item) {
 	queue->last = node;
     }
     cnd_signal(&nonEmpty);
-    // mtx_unlock(&queue_mtx);
+    mtx_unlock(&queue_mtx);
     wdequeue();
     mtx_unlock(&thread_mtx);
 }
@@ -141,9 +145,11 @@ void *dequeue(void) {
 	wenqueue(cv);
 	cnd_destroy(&cv);
     }
-    // mtx_lock(&queue_mtx);
+    mtx_lock(&queue_mtx);
     while (queue->first == NULL) {
-	cnd_wait(&nonEmpty, &queue_mtx);
+	mtx_unlock(&queue_mtx);
+	cnd_wait(&nonEmpty, &thread_mtx);
+	mtx_lock(&queue_mtx);
     } // Reachable after lock is reacquired
     first_node = queue->first;
     item = first_node->content;
@@ -153,7 +159,7 @@ void *dequeue(void) {
     }
     free(first_node);
     count++;
-    // mtx_unlock(&queue_mtx);
+    mtx_unlock(&queue_mtx);
     wdequeue();
     mtx_unlock(&thread_mtx);
     return item;
@@ -171,12 +177,18 @@ bool tryDequeue(void **address) {
 	    return false;
 	}	
 	else { // Reachable after lock is reacquired
+	    if (is_empty()) {
+		mtx_unlock(&queue_mtx);
+		mtx_unlock(&thread_mtx);
+		return false;
+	    }
 	    first_node = queue->first;
 	    *address = first_node->content;
 	    queue->first = queue->first->next;
 	    free(first_node);
 	    count++;
 	    mtx_unlock(&queue_mtx);
+	    mtx_unlock(&thread_mtx);
 	    return true;
 	} 
     }
